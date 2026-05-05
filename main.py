@@ -13,7 +13,6 @@ pygame.init()
 screen = pygame.display.set_mode((640, 480))
 pygame.display.set_caption("Tello Drone Feed")
 
-# Start video stream
 drone.streamon()
 
 running = True
@@ -21,6 +20,11 @@ while running:
       # Input handling
       for event in pygame.event.get():
          if event.type == pygame.QUIT: running = False 
+         if event.type == pygame.KEYDOWN:
+              if event.key == pygame.K_t: drone.takeoff()
+              if event.key == pygame.K_l: drone.land()
+              if event.key == pygame.K_UP: drone.move_forward(30)
+
    
       # Get the video frame from the drone
       frame = drone.get_frame_read().frame
@@ -32,5 +36,6 @@ while running:
       pygame.display.flip() # Same thing as .update() for entire window
 
 # Clean up
+drone.land()
 drone.streamoff()
 pygame.quit()
