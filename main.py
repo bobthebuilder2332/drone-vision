@@ -1,6 +1,5 @@
 from djitellopy import Tello # djitellopy2 uses the same module name ('djitellopy')
 import cv2
-import cv2.aruco as aruco # Module for ArUco marker detection
 import pygame
 import threading # Used for takeoff  and landing to prevent the program from hanging (those are blocking calls)
 
@@ -15,6 +14,12 @@ print(f"{battery:=^40}")
 drone.streamon()
 frame_read = drone.get_frame_read() # Start the video stream and get the frame reader object (runs in background)
 
+
+# Initialize the ArUco marker detection
+aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50) # Get the predefined dictionary (use 50 because tradeoff variety for speed)
+aruco_params = cv2.aruco.DetectorParameters() # Default parameters
+detector = cv2.aruco.ArucoDetector(aruco_dict, aruco_params) # Create the ArUco marker detector using the specified dictionary and parameters
+MARKER_SIZE = .1 # Physical size of marker is 100 mm
 
 # Initialize Pygame
 pygame.init()
@@ -32,7 +37,10 @@ last_rc_control = [0, 0, 0, 0]
 # Main loop
 try:
       running = True
+      frame_counter = 0
       while running: 
+            frame_counter += 1
+
             # Input handling
             for event in pygame.event.get():
                   if event.type == pygame.QUIT: running = False 
@@ -64,12 +72,20 @@ try:
             # Get the video frame from the drone
             frame = frame_read.frame # Get the latest frame from the video stream
             if frame is not None:
-                  battery = f"Battery: {drone.get_battery()}%"
-                  pygame.display.set_caption(f"Tello Drone Feed | {battery}") # Show battery percentage in window name
+                  # Only run battery check every 5 seconds
+                  if frame_counter % 150 == 0:
+                        battery = f"Battery: {drone.get_battery()}%"
+                        pygame.display.set_caption(f"Tello Drone Feed | {battery}") # Show battery percentage in window name
                   
+                  # Look for markers
+                  corners, ids, rejected = detector.detectMarkers(frame)
+                  if ids is not None:
+                        print(f"Detected tag ID: {ids}")
+                        cv2.aruco.drawDetectedMarkers(frame, corners, ids)
+
                   frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)  # Convert color from BGR (OpenCV) to RGB (Pygame)
                   frame = frame.swapaxes(0, 1)  # Swap axes from height x width (OpenCV) to width x height (Pygame)
-      
+
                   # Convert the frame to a Pygame surface and display it
                   frame_surface = pygame.surfarray.make_surface(frame)
                   screen.blit(frame_surface, (0, 0))
