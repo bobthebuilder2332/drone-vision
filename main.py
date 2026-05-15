@@ -47,7 +47,7 @@ try:
                   if event.type == pygame.KEYDOWN:
                         if event.key == pygame.K_t: threading.Thread(target=drone.takeoff, daemon=True).start()
                         if event.key == pygame.K_l: threading.Thread(target=drone.land, daemon=True).start()
-                        if event.key == pygame.K_e: drone.emergency() # Emergency stop and cuts all motors
+                        if event.key == pygame.K_e: threading.Thread(target=drone.emergency(), daemon=True).start() # Emergency stop and cuts all motors
                         if event.key == pygame.K_q: running = False
                         
                         if event.key == pygame.K_w: rc_control[1] = speed
