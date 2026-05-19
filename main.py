@@ -78,10 +78,29 @@ try:
                         pygame.display.set_caption(f"Tello Drone Feed | {battery}") # Show battery percentage in window name
                   
                   # Look for markers
-                  corners, ids, rejected = detector.detectMarkers(frame)
+                  corners, ids, _ = detector.detectMarkers(frame)
                   if ids is not None:
-                        print(f"Detected tag ID: {ids}")
+                        # match ids:
+                        #       case 0:
+                        #             pass
+                        #       case 1:
+                        #             pass
+                        #       case 2:
+                        #             pass
+                        #       case 3:
+                        #             pass
+                        #       case 4:
+                        #             pass
+                        #       case 5:
+                        #             pass
+                        #       case 6:
+                        #             pass
+                        #       case 7:
+                        #             pass
+                        #       case 8:
+                        #             pass
                         cv2.aruco.drawDetectedMarkers(frame, corners, ids)
+                        print(ids)
 
                   frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)  # Convert color from BGR (OpenCV) to RGB (Pygame)
                   frame = frame.swapaxes(0, 1)  # Swap axes from height x width (OpenCV) to width x height (Pygame)
