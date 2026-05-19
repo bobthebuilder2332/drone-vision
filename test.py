@@ -59,30 +59,37 @@ with vision.HandLandmarker.create_from_options(options) as landmarker:
                 wrist = hand_landmarks[0]
                 fingers_open = []
 
-                # 1. Thumb tracking logic (uses distance relative to pinky finger base knuckle to detect extension)
+                # 1. FIXED THUMB LOGIC: Independent of Handedness, Mirroring, or Palm Orientation
+                # Uses the horizontal distance between Thumb Tip (4) and Index Finger Base (5)
+                # normalized by the distance between Index Base (5) and Pinky Base (17) to scale for camera distance.
                 thumb_tip = hand_landmarks[4]
+                index_base = hand_landmarks[5]
                 pinky_base = hand_landmarks[17]
-                thumb_dist = math.sqrt((thumb_tip.x - pinky_base.x)**2 + (thumb_tip.y - pinky_base.y)**2)
+
+                # Hand scale metric (distance between knuckles across the palm)
+                hand_scale = math.sqrt((index_base.x - pinky_base.x)**2 + (index_base.y - pinky_base.y)**2)
                 
-                if thumb_dist > 0.3:  # Static spatial ratio threshold
+                # Horizontal distance from thumb tip to index base
+                thumb_to_index_x = abs(thumb_tip.x - index_base.x)
+
+                # If the horizontal distance is greater than 38% of the hand's width, the thumb is open
+                if (thumb_to_index_x / hand_scale) > 0.38:
                     fingers_open.append(1)
                 else:
                     fingers_open.append(0)
 
-                # 2. Structural tracking loop for standard fingers (Index, Middle, Ring, Pinky)
-                # Compares absolute Tip-to-Wrist distance against Knuckle-to-Wrist distance
+                # 2. Corrected Finger tracking loop (Index, Middle, Ring, Pinky)
+                # Compares Y-coordinates of Tip vs PIP joint (Joint 2 steps below tip)
                 finger_tip_ids = [8, 12, 16, 20]
                 for tip_id in finger_tip_ids:
                     tip = hand_landmarks[tip_id]
-                    knuckle = hand_landmarks[tip_id - 2] # Joint directly below tip
+                    pip = hand_landmarks[tip_id - 2]
                     
-                    dist_tip_to_wrist = math.sqrt((tip.x - wrist.x)**2 + (tip.y - wrist.y)**2)
-                    dist_knuckle_to_wrist = math.sqrt((knuckle.x - wrist.x)**2 + (knuckle.y - wrist.y)**2)
-                    
-                    if dist_tip_to_wrist > dist_knuckle_to_wrist:
-                        fingers_open.append(1) # Finger is extended
+                    # MediaPipe Y-axis increases downward. Lower Y value means higher in frame.
+                    if tip.y < pip.y:
+                        fingers_open.append(1)
                     else:
-                        fingers_open.append(0) # Finger is curled into palm
+                        fingers_open.append(0)
 
                 total_fingers = sum(fingers_open)
                 
