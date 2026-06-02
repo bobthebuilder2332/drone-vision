@@ -9,6 +9,7 @@ from mediapipe.tasks.python import vision
 
 # Global container for the asynchronous worker thread results
 latest_result = None
+mode = 'tag'
 
 def save_result(result: vision.GestureRecognizerResult, output_image: mp.Image, timestamp_ms: int):
     global latest_result
@@ -69,7 +70,9 @@ with vision.GestureRecognizer.create_from_options(options) as recognizer:
 
                 # Input handling
                 for event in pygame.event.get():
-                      if event.type == pygame.QUIT: running = False 
+                      if event.type == pygame.QUIT: running = False
+
+                        
                       if event.type == pygame.KEYDOWN:
                             if event.key == pygame.K_t: threading.Thread(target=drone.takeoff, daemon=True).start()
                             if event.key == pygame.K_l: threading.Thread(target=drone.land, daemon=True).start()
@@ -204,20 +207,20 @@ with vision.GestureRecognizer.create_from_options(options) as recognizer:
                           # Start fresh with a neutral hover loop vector baseline
                           automated_rc = [0, 0, 0, 0]
                           
-                          # PRIORITY 1: Master Hand Gestures (Explicit Directions)
-                          if gesture_name == "Closed_Fist":
-                              automated_rc = [0, 0, 0, 0] 
-                          elif gesture_name == "Pointing Up":
-                              automated_rc[2] = 25  # Ascend
-                          elif gesture_name == "Pointing Down":
-                              automated_rc[2] = -25 # Descend
-                          elif gesture_name == "Pointing Left":
-                              automated_rc[0] = -25 # Strafe Left
-                          elif gesture_name == "Pointing Right":
-                              automated_rc[0] = 25  # Strafe Right
+                          if mode == 'gesture':
+                              if gesture_name == "Closed_Fist":
+                                    automated_rc = [0, 0, 0, 0] 
+                              elif gesture_name == "Pointing Up":
+                                    automated_rc[2] = 25  # Ascend
+                              elif gesture_name == "Pointing Down":
+                                    automated_rc[2] = -25 # Descend
+                              elif gesture_name == "Pointing Left":
+                                    automated_rc[0] = -25 # Strafe Left
+                              elif gesture_name == "Pointing Right":
+                                    automated_rc[0] = 25  # Strafe Right
                               
                           # PRIORITY 2: ArUco Tag Autopilot (Runs if hand isn't overriding)
-                          elif len(detected_ids) > 0:
+                          if mode == 'tag' and len(detected_ids) > 0:
                               primary_tag = detected_ids[0]
                               
                               if primary_tag == 0:
