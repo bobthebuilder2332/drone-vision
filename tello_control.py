@@ -1,7 +1,7 @@
-import sys
 import time
 import cv2 
 import numpy as np
+import threading  # <-- IMPORTED THREADING MODULE FOR ASYNC MANEUVERS
 import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
@@ -67,21 +67,39 @@ dist_coeffs = np.zeros((5, 1))
 
 TARGET_DISTANCE = 50.0  # Target distance from ArUco tag in cm
 
+# Global tracking variable to block redundant concurrent command dispatches
+action_in_progress = False
+
+def run_async_maneuver(target_function):
+    """Worker thread target that executes blocking flight commands without freezing the UI."""
+    global action_in_progress
+    action_in_progress = True
+    try:
+        target_function()
+    except Exception as err:
+        print(f"Threaded maneuver exception: {err}")
+    finally:
+        action_in_progress = False
+
 def get_keyboard_command():
     """Polls standard keyboard states via OpenCV's waitKey."""
+    global action_in_progress
     lr, fb, ud, yv = 0, 0, 0, 0
     speed = 50
     
     key = cv2.waitKey(1) & 0xFF
     
-    # Flight State Commands
-    if key == ord('t'):
-        drone.takeoff()
-    elif key == ord('l'):
-        drone.land()
+    # Flight State Commands - Guarded with threads to preserve live video
+    if not action_in_progress:
+        if key == ord('t') and not drone.is_flying:
+            print("\nTriggering Asynchronous Takeoff...")
+            threading.Thread(target=run_async_maneuver, args=(drone.takeoff,), daemon=True).start()
+        elif key == ord('l') and drone.is_flying:
+            print("\nTriggering Asynchronous Landing...")
+            threading.Thread(target=run_async_maneuver, args=(drone.land,), daemon=True).start()
     
     # Movement Controls
-    elif key == ord('w'): fb = speed   # Forward
+    if key == ord('w'): fb = speed   # Forward
     elif key == ord('s'): fb = -speed  # Backward
     elif key == ord('a'): lr = -speed  # Left
     elif key == ord('d'): lr = speed   # Right
@@ -90,13 +108,13 @@ def get_keyboard_command():
     elif key == ord('q'): yv = -speed  # Yaw Left
     elif key == ord('e'): yv = speed   # Yaw Right
     
-    # Updated Mode Switching Inputs
+    # Mode Switching Inputs
     elif key == ord('1'): return 1, (0, 0, 0, 0), False
     elif key == ord('2'): return 2, (0, 0, 0, 0), False
     elif key == ord('3'): return 3, (0, 0, 0, 0), False
     
     # Explicit Exit/Quit Keys
-    elif key == 27 or key == ord('x'): # 27 is the Escape key code
+    elif key == 27 or key == ord('x'): 
         return current_mode, (0, 0, 0, 0), True
         
     return current_mode, (lr, fb, ud, yv), False
@@ -167,7 +185,6 @@ try:
             if legacy_aruco:
                 corners, ids, _ = cv2.aruco.detectMarkers(gray, aruco_dict, parameters=aruco_params)
             else:
-                # Fixed unpacking layout matching OpenCV runtime shapes
                 corners, ids, _ = aruco_detector.detectMarkers(gray)
                 
             if ids is not None:
@@ -194,7 +211,8 @@ try:
         # =====================================================================
         # FLIGHT CONTROL DISPATCH & HUD TELEMETRY
         # =====================================================================
-        if drone.is_flying:
+        # Do not send minor velocity adjustments if a major state change is processing
+        if drone.is_flying and not action_in_progress:
             drone.send_rc_control(lr, fb, ud, yv)
             
         cv2.putText(frame, f"MODE: {mode_names[current_mode]}", (20, 50), 
@@ -203,6 +221,10 @@ try:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
         cv2.putText(frame, "T: Takeoff | L: Land | ESC/X: Exit Script", (20, 120), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+        
+        if action_in_progress:
+            cv2.putText(frame, "EXECUTING MANEUVER...", (20, 160), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
         
         cv2.imshow("Tello Robotics Target Pipeline", frame)
 
