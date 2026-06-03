@@ -1,44 +1,89 @@
 import time
 import cv2 
 import numpy as np
-import threading  # <-- IMPORTED THREADING MODULE FOR ASYNC MANEUVERS
+import threading
 import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
-from djitellopy import Tello
+from djitellopy import Tello  # <-- ADDED FROM TELLO_CONTROL.PY
 
 # =====================================================================
-# GLOBAL CONTAINER FOR ASYNCHRONOUS TASKS API LANDMARKS
+# TUNABLE CONFIGURATION PARAMETERS (ADJUST FLIGHT CHARACTERS HERE)
+# =====================================================================
+class Config:
+    # Drone Speed Limits & Multipliers
+    MAX_SPEED = 40           # Maximum velocity cap for safe indoor tracking
+    MANUAL_SPEED = 50        # Constant velocity vector when pressing W,S,A,D
+    
+    # Hand Gesture Detection Thresholds
+    CURL_THRESHOLD = 0.05    # Structural distance threshold to verify a finger is curled
+    INDEX_EXTEND_MIN = 0.08  # Minimum distance to verify the index finger is extended
+
+# =====================================================================
+# GLOBAL STATE CONTAINERS & ASYNC CALBACKS
 # =====================================================================
 latest_gesture_result = None
 
 def gesture_callback(result: vision.GestureRecognizerResult, output_image: mp.Image, timestamp_ms: int):
-    """Asynchronous callback triggered whenever MediaPipe finishes processing a frame."""
     global latest_gesture_result
     latest_gesture_result = result
 
 # =====================================================================
-# SYSTEM INITIALIZATION
+# GEOMETRIC VECTOR HELPER FUNCTIONS
 # =====================================================================
+def is_finger_curled(tip, mcp):
+    """Returns True if a given finger tip is curled down close/below its knuckle."""
+    return tip.y > mcp.y - Config.CURL_THRESHOLD
 
-# Initialize Tello Drone
+def detect_pointing_direction(landmarks):
+    """
+    Analyzes hand structure vectors. Returns a string description of pointing direction
+    if the index finger is extended and all other fingers are curled into the palm.
+    """
+    wrist = landmarks[0]
+    index_mcp = landmarks[5]
+    index_tip = landmarks[8]
+    middle_tip = landmarks[12]
+    ring_tip = landmarks[16]
+    pinky_tip = landmarks[20]
+    
+    index_extended = (index_mcp.y - index_tip.y) > Config.INDEX_EXTEND_MIN or abs(index_tip.x - index_mcp.x) > Config.INDEX_EXTEND_MIN
+    
+    others_curled = (is_finger_curled(middle_tip, landmarks[9]) and 
+                     is_finger_curled(ring_tip, landmarks[13]) and 
+                     is_finger_curled(pinky_tip, landmarks[17]))
+    
+    if index_extended and others_curled:
+        dx = index_tip.x - index_mcp.x
+        dy = index_tip.y - index_mcp.y
+        
+        if abs(dx) > abs(dy):
+            return "POINTING LEFT" if dx < -0.05 else "POINTING RIGHT" if dx > 0.05 else "NEUTRAL"
+        else:
+            return "POINTING UP" if dy < -0.05 else "POINTING DOWN" if dy > 0.05 else "NEUTRAL"
+            
+    return "NEUTRAL"
+
+# =====================================================================
+# SYSTEM INITIALIZATION (LOCAL WEBCAM BENCH REPLACED BY TELLO INIT)
+# =====================================================================
+print("=" * 60)
+print("INITIALIZING WORKBENCH SIMULATION")
+print("=" * 60)
+
+# Replaced local webcam initialization with Tello Stream Setup
 drone = Tello()
 drone.connect()
 drone.streamon()
 print(f"Battery Level: {drone.get_battery()}%")
 
-# ArUco Tag Configuration (4x4, 50 variants)
-try:
-    aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
-    aruco_params = cv2.aruco.DetectorParameters()
-    aruco_detector = cv2.aruco.ArucoDetector(aruco_dict, aruco_params)
-    legacy_aruco = False
-except AttributeError:
-    aruco_dict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_4X4_50)
-    aruco_params = cv2.aruco.DetectorParameters_create()
-    legacy_aruco = True
+# ArUco Configuration completely copied from test.py
+aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50) # Get the predefined dictionary (use 50 because tradeoff variety for speed)
+aruco_params = cv2.aruco.DetectorParameters() # Default parameters
+detector = cv2.aruco.ArucoDetector(aruco_dict, aruco_params) # Create the ArUco marker detector using the specified dictionary and parameters
+MARKER_SIZE = .1 # Physical size of marker is 100 mm
 
-# MediaPipe Modern Tasks API Configuration
+# MediaPipe Setup
 model_path = 'gesture_recognizer.task'
 base_options = python.BaseOptions(model_asset_path=model_path)
 options = vision.GestureRecognizerOptions(
@@ -46,197 +91,160 @@ options = vision.GestureRecognizerOptions(
     running_mode=vision.RunningMode.LIVE_STREAM,
     num_hands=1,
     min_hand_detection_confidence=0.5,
-    min_hand_presence_confidence=0.5,
     result_callback=gesture_callback
 )
 recognizer = vision.GestureRecognizer.create_from_options(options)
 
-# =====================================================================
-# FLIGHT CONFIGURATION & STATE METRICS
-# =====================================================================
-# Updated Control Modes: 1 = Manual Keyboard, 2 = Gesture Control, 3 = ArUco Tracking
-current_mode = 1 
+# Environment Simulated Metrics
+current_mode = 3 
 mode_names = {1: "MANUAL KEYBOARD", 2: "HAND GESTURE", 3: "ARUCO TRACKING"}
-
-focal_length = 920.0  
-center_x, center_y = 480, 360
-camera_matrix = np.array([[focal_length, 0, center_x],
-                          [0, focal_length, center_y],
-                          [0, 0, 1]], dtype=np.float32)
-dist_coeffs = np.zeros((5, 1))
-
-TARGET_DISTANCE = 50.0  # Target distance from ArUco tag in cm
-
-# Global tracking variable to block redundant concurrent command dispatches
+simulated_is_flying = False
 action_in_progress = False
 
-def run_async_maneuver(target_function):
-    """Worker thread target that executes blocking flight commands without freezing the UI."""
-    global action_in_progress
+# Diagnostic Memory
+last_printed_state = {"vector": [0, 0, 0, 0], "gesture": "NEUTRAL", "tag_seen": False}
+
+def simulate_async_maneuver(command_name):
+    global action_in_progress, simulated_is_flying
     action_in_progress = True
-    try:
-        target_function()
-    except Exception as err:
-        print(f"Threaded maneuver exception: {err}")
-    finally:
-        action_in_progress = False
+    print(f"\n[MANEUVER START] Executing blocking operation: {command_name.upper()}...")
+    time.sleep(3.0) 
+    simulated_is_flying = (command_name == "takeoff")
+    print(f"[MANEUVER COMPLETED] System State: Flying={simulated_is_flying}")
+    action_in_progress = False
 
 def get_keyboard_command():
-    """Polls standard keyboard states via OpenCV's waitKey."""
-    global action_in_progress
+    global action_in_progress, simulated_is_flying
     lr, fb, ud, yv = 0, 0, 0, 0
-    speed = 50
-    
     key = cv2.waitKey(1) & 0xFF
     
-    # Flight State Commands - Guarded with threads to preserve live video
     if not action_in_progress:
-        if key == ord('t') and not drone.is_flying:
-            print("\nTriggering Asynchronous Takeoff...")
-            threading.Thread(target=run_async_maneuver, args=(drone.takeoff,), daemon=True).start()
-        elif key == ord('l') and drone.is_flying:
-            print("\nTriggering Asynchronous Landing...")
-            threading.Thread(target=run_async_maneuver, args=(drone.land,), daemon=True).start()
+        if key == ord('t') and not simulated_is_flying:
+            threading.Thread(target=simulate_async_maneuver, args=("takeoff",), daemon=True).start()
+        elif key == ord('l') and simulated_is_flying:
+            threading.Thread(target=simulate_async_maneuver, args=("land",), daemon=True).start()
     
-    # Movement Controls
-    if key == ord('w'): fb = speed   # Forward
-    elif key == ord('s'): fb = -speed  # Backward
-    elif key == ord('a'): lr = -speed  # Left
-    elif key == ord('d'): lr = speed   # Right
-    elif key == ord('r'): ud = speed   # Up
-    elif key == ord('f'): ud = -speed  # Down
-    elif key == ord('q'): yv = -speed  # Yaw Left
-    elif key == ord('e'): yv = speed   # Yaw Right
+    if key == ord('w'): fb = Config.MANUAL_SPEED   
+    elif key == ord('s'): fb = -Config.MANUAL_SPEED  
+    elif key == ord('a'): lr = -Config.MANUAL_SPEED  
+    elif key == ord('d'): lr = Config.MANUAL_SPEED   
+    elif key == ord('r'): ud = Config.MANUAL_SPEED   
+    elif key == ord('f'): ud = -Config.MANUAL_SPEED  
+    elif key == ord('q'): yv = -Config.MANUAL_SPEED  
+    elif key == ord('e'): yv = Config.MANUAL_SPEED   
     
-    # Mode Switching Inputs
     elif key == ord('1'): return 1, (0, 0, 0, 0), False
     elif key == ord('2'): return 2, (0, 0, 0, 0), False
     elif key == ord('3'): return 3, (0, 0, 0, 0), False
-    
-    # Explicit Exit/Quit Keys
-    elif key == 27 or key == ord('x'): 
-        return current_mode, (0, 0, 0, 0), True
+    elif key == 27 or key == ord('x'): return current_mode, (0, 0, 0, 0), True
         
     return current_mode, (lr, fb, ud, yv), False
 
 # =====================================================================
-# MAIN FLIGHT EXECUTION STREAM
+# MAIN FRAME COMPUTATION WHIRLPOOL
 # =====================================================================
 try:
     while True:
+        # Replaced cap.read() with Tello frame reading logic
         frame_read = drone.get_frame_read()
         raw_frame = frame_read.frame
         if raw_frame is None:
             continue
             
-        # Convert Native Tello RGB array to BGR array for correct OpenCV colors
-        frame = cv2.cvtColor(raw_frame, cv2.COLOR_RGB2BGR)
-        frame = cv2.resize(frame, (960, 720))
+        # Transform Native Tello RGB array to BGR array for correct OpenCV colors
+        raw_frame_bgr = cv2.cvtColor(raw_frame, cv2.COLOR_RGB2BGR)
+
+        #frame = cv2.flip(raw_frame, 1) 
+        #frame = cv2.resize(frame, (960, 720))
+        resized_frame = cv2.resize(raw_frame_bgr, (960, 720))
+        frame = cv2.flip(resized_frame, 1) 
+
         h, w, _ = frame.shape
         
-        # Reset zeroed base velocity vectors for this loop cycle
         lr, fb, ud, yv = 0, 0, 0, 0
+        active_gesture = "NEUTRAL"
+        tag_detected_this_frame = False
         
         new_mode, kb_vals, should_quit = get_keyboard_command()
-        
-        # Handle explicit exit interrupt
-        if should_quit:
-            print("\nExit command detected. Initiating landing sequence...")
-            break
-            
+        if should_quit: break
         if new_mode != current_mode:
             current_mode = new_mode
-            print(f"Switched to Mode: {mode_names[current_mode]}")
-            
+            print(f"\n[MODE SWITCH] Switched to pipeline channel: {mode_names[current_mode]}")
+        
+
         if current_mode == 1:
             lr, fb, ud, yv = kb_vals
 
         # -----------------------------------------------------------------
-        # MODE 2: MODERN GESTURE TASKS CONTROL
+        # MODULAR CHANNEL 2: HAND GESTURE CLASSIFIER
         # -----------------------------------------------------------------
         elif current_mode == 2:
-            rgb_resized = cv2.resize(raw_frame, (960, 720))
-            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_resized)
-            
-            timestamp_ms = int(time.time() * 1000)
-            recognizer.recognize_async(mp_image, timestamp_ms)
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+            recognizer.recognize_async(mp_image, int(time.time() * 1000))
             
             if latest_gesture_result and latest_gesture_result.hand_landmarks:
                 for hand_landmarks in latest_gesture_result.hand_landmarks:
-                    # RENDER OVERLAYS ONLY IN GESTURE MODE
-                    for landmark in hand_landmarks:
-                        cx, cy = int(landmark.x * w), int(landmark.y * h)
-                        cv2.circle(frame, (cx, cy), 4, (0, 255, 0), -1)
+                    for lm in hand_landmarks:
+                        cv2.circle(frame, (int(lm.x * w), int(lm.y * h)), 4, (0, 255, 0), -1)
                     
-                    wrist = hand_landmarks[0]
-                    middle_tip = hand_landmarks[12]
+                    active_gesture = detect_pointing_direction(hand_landmarks)
                     
-                    if middle_tip.y < wrist.y - 0.2:    fb = 30  
-                    elif middle_tip.y > wrist.y - 0.05:  fb = -30 
-                    
-                    if middle_tip.x < wrist.x - 0.1:     lr = -30 
-                    elif middle_tip.x > wrist.x + 0.1:   lr = 30  
+                    if active_gesture == "POINTING UP":     ud = 30
+                    elif active_gesture == "POINTING DOWN":   ud = -30
+                    elif active_gesture == "POINTING LEFT":   lr = -30
+                    elif active_gesture == "POINTING RIGHT":  lr = 30
+
 
         # -----------------------------------------------------------------
-        # MODE 3: ARUCO TAG TARGET TRACKING
+        # MODULAR CHANNEL 3: ARUCO REPLACED COMPLETELY FROM TEST.PY
         # -----------------------------------------------------------------
         elif current_mode == 3:
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            if legacy_aruco:
-                corners, ids, _ = cv2.aruco.detectMarkers(gray, aruco_dict, parameters=aruco_params)
-            else:
-                corners, ids, _ = aruco_detector.detectMarkers(gray)
-                
+            # Look for markers, notice: cv2.flip() will fail the detection
+            corners, ids, rejected = detector.detectMarkers(resized_frame)
             if ids is not None:
-                # RENDER OVERLAYS ONLY IN ARUCO MODE
-                cv2.aruco.drawDetectedMarkers(frame, corners, ids)
-                rvecs, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(corners, 0.10, camera_matrix, dist_coeffs)
-                
-                if rvecs is not None and len(rvecs) > 0:
-                    cv2.drawFrameAxes(frame, camera_matrix, dist_coeffs, rvecs[0], tvecs[0], 0.05)
-                    
-                    x_err = tvecs[0][0][0] * 100 
-                    y_err = tvecs[0][0][1] * 100
-                    z_dist = tvecs[0][0][2] * 100
-                    
-                    lr = int(np.clip(x_err * 1.5, -40, 40))   
-                    ud = int(np.clip(-y_err * 1.5, -40, 40))  
-                    
-                    dist_err = z_dist - TARGET_DISTANCE
-                    if abs(dist_err) > 5:
-                        fb = int(np.clip(dist_err * 1.2, -35, 35))
-            else:
-                lr, fb, ud, yv = 0, 0, 0, 0
+                tag_detected_this_frame = True
+                print(f"Detected tag ID: {ids}")
+                cv2.aruco.drawDetectedMarkers(resized_frame, corners, ids)
+                frame = cv2.flip(resized_frame, 1)
 
         # =====================================================================
-        # FLIGHT CONTROL DISPATCH & HUD TELEMETRY
+        # DIAGNOSTIC CONSOLE MANAGEMENT & RENDERS
         # =====================================================================
-        # Do not send minor velocity adjustments if a major state change is processing
-        if drone.is_flying and not action_in_progress:
-            drone.send_rc_control(lr, fb, ud, yv)
-            
-        cv2.putText(frame, f"MODE: {mode_names[current_mode]}", (20, 50), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-        cv2.putText(frame, "1: Manual | 2: Gesture | 3: ArUco", (20, 90), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
-        cv2.putText(frame, "T: Takeoff | L: Land | ESC/X: Exit Script", (20, 120), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+        current_vector = [lr, fb, ud, yv]
         
+        if (current_vector != last_printed_state["vector"] or 
+            active_gesture != last_printed_state["gesture"] or 
+            tag_detected_this_frame != last_printed_state["tag_seen"]):
+            
+            if simulated_is_flying and not action_in_progress:
+                print(f"[TX ENGAGED] Vectors -> LR: {lr} | FB: {fb} | UD: {ud} | YW: {yv} [Context: Gesture={active_gesture}, TagSeen={tag_detected_this_frame}]")
+            elif not simulated_is_flying:
+                print(f"[TX SAFE-BLOCKED] Drone Landed. Target Vector Intent: {current_vector} | Gesture: {active_gesture}")
+                
+            last_printed_state = {"vector": current_vector, "gesture": active_gesture, "tag_seen": tag_detected_this_frame}
+
+        # UI Overlays Draws
+        cv2.putText(frame, f"MODE: {mode_names[current_mode]}", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        cv2.putText(frame, f"STATUS: {'FLYING' if simulated_is_flying else 'LANDED'}", (20, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 120, 0), 2)
+        
+        if current_mode == 2:
+            cv2.putText(frame, f"GESTURE: {active_gesture}", (20, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 255), 2)
+            
+        cv2.putText(frame, "1: Manual | 2: Gesture | 3: ArUco | T/L: Takeoff/Land | ESC: Exit", (20, h - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+    
         if action_in_progress:
-            cv2.putText(frame, "EXECUTING MANEUVER...", (20, 160), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            cv2.putText(frame, "EXECUTING MANEUVER INTERRUPT...", (20, 180), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
         
         cv2.imshow("Tello Robotics Target Pipeline", frame)
 
 finally:
-    print("\nExecuting Safe System Shutdown Sequence...")
-    try:
-        if drone.is_flying:
-            drone.land()
-        drone.send_rc_control(0, 0, 0, 0)
-        drone.streamoff()
-    except Exception as shutdown_err:
-        print(f"Drone disconnect cleanup notice: {shutdown_err}")
+    print("\nWiping system workspace contexts...")
+    try: 
+        drone.streamoff()  # <-- ADDED TELLO CLEANUP
+    except: 
         pass
-    recognizer.close()
+    try: recognizer.close()
+    except: pass
     cv2.destroyAllWindows()
+    print("Clean environment exit achieved.")
