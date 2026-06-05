@@ -7,6 +7,7 @@ This is a very simple project that utilizes computer vision to control a DJI Tel
 * Keyboard control
 * Hand gesture control
 * ArUco tag control
+* Self centering landing using ArUco tag
 * Live video feed from drone
 
 ## How to setup and use (Bash)
@@ -32,6 +33,7 @@ This is a very simple project that utilizes computer vision to control a DJI Tel
    pip install --upgrade pip
    pip install -r requirements.txt
    ```
+7. Run the 1234.py file
 
 
 Distributed under MIT license
