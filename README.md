@@ -33,7 +33,7 @@ This is a very simple project that utilizes computer vision to control a DJI Tel
    pip install --upgrade pip
    pip install -r requirements.txt
    ```
-7. Run the 1234.py file
+7. Run the main.py file
 
 
 Distributed under MIT license
