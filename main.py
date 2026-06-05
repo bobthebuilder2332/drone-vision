@@ -1,12 +1,12 @@
-from pprint import pprint
 import time
-import cv2 
-import numpy as np
+import cv2
 import threading
 import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 from djitellopy import Tello 
+
+
 
 # =====================================================================
 # TUNABLE CONFIGURATION PARAMETERS (ADJUST FLIGHT CHARACTERS HERE)
@@ -66,6 +66,7 @@ def detect_pointing_direction(landmarks):
             
     return "NEUTRAL"
 
+
 # =====================================================================
 # SYSTEM INITIALIZATION
 # =====================================================================
@@ -79,6 +80,7 @@ drone.streamon()
 print("\n\n\n")
 print(f"Battery Level: {drone.get_battery()}%")
 print("\n\n\n")
+drone.send_rc_control(0,0,0,0) # reset saved command carry over from last run
 
 # ArUco Configuration 
 aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50) 
@@ -100,7 +102,7 @@ recognizer = vision.GestureRecognizer.create_from_options(options)
 
 # Environment Metrics
 current_mode = 1
-mode_names = {1: "MANUAL KEYBOARD", 2: "HAND GESTURE", 3: "ARUCO TRACKING"}
+mode_names = {1: "MANUAL KEYBOARD", 2: "HAND GESTURE", 3: "ARUCO TRACKING", 4: "AUTO PILOT", 5: "AUTO LANDING"}
 action_in_progress = False
 
 # Diagnostic Memory
@@ -117,6 +119,13 @@ def run_async_maneuver(target_function):
     finally:
         action_in_progress = False
 
+def turnMove():
+    global current_mode
+    drone.rotate_clockwise(180)
+    drone.set_video_direction(drone.CAMERA_DOWNWARD)
+    drone.move_forward(50)
+    current_mode = 4  # Auto pilot
+
 def get_keyboard_command():
     global action_in_progress
     lr, fb, ud, yv = 0, 0, 0, 0
@@ -130,20 +139,34 @@ def get_keyboard_command():
             print("\n[FLIGHT COMMAND] Spawning Asynchronous Landing Thread...")
             threading.Thread(target=run_async_maneuver, args=(drone.land,), daemon=True).start()
     
-    if key == ord('w'): fb = Config.MANUAL_SPEED   
-    elif key == ord('s'): fb = -Config.MANUAL_SPEED  
-    elif key == ord('a'): lr = Config.MANUAL_SPEED  
-    elif key == ord('d'): lr = -Config.MANUAL_SPEED   
-    elif key == ord('r'): ud = Config.MANUAL_SPEED   
-    elif key == ord('f'): ud = -Config.MANUAL_SPEED  
-    elif key == ord('q'): yv = -Config.MANUAL_SPEED  
-    elif key == ord('e'): yv = Config.MANUAL_SPEED   
+    if key == ord('w'): fb = Config.MANUAL_SPEED
+    elif key == ord('s'): fb = -Config.MANUAL_SPEED
+    elif key == ord('a'): lr = Config.MANUAL_SPEED
+    elif key == ord('d'): lr = -Config.MANUAL_SPEED
+    elif key == ord('r'): ud = Config.MANUAL_SPEED
+    elif key == ord('f'): ud = -Config.MANUAL_SPEED
+    elif key == ord('q'): yv = -Config.MANUAL_SPEED
+    elif key == ord('e'): yv = Config.MANUAL_SPEED
+
+    elif key == ord('b'): print(drone.get_battery())
     
-    elif key == ord('1'): return 1, (0, 0, 0, 0), False
-    elif key == ord('2'): return 2, (0, 0, 0, 0), False
-    elif key == ord('3'): return 3, (0, 0, 0, 0), False
+    elif key == ord('1'):
+        drone.set_video_direction(drone.CAMERA_FORWARD)
+        return 1, (0, 0, 0, 0), False
+    elif key == ord('2'):
+        drone.set_video_direction(drone.CAMERA_FORWARD)
+        return 2, (0, 0, 0, 0), False
+    elif key == ord('3'):
+        drone.set_video_direction(drone.CAMERA_FORWARD)
+        return 3, (0, 0, 0, 0), False
+    elif key == ord('4'):
+        drone.set_video_direction(drone.CAMERA_DOWNWARD)
+        return 4, (0, 0, 0, 0), False 
+    elif key == ord('5'):
+        drone.set_video_direction(drone.CAMERA_DOWNWARD)
+        return 5, (0, 0, 0, 0), False
     elif key == 27 or key == ord('x'): return current_mode, (0, 0, 0, 0), True
-        
+
     return current_mode, (lr, fb, ud, yv), False
 
 def send_keepalive():
@@ -154,11 +177,14 @@ def send_keepalive():
         print("=" * 50)
 threading.Thread(target=send_keepalive, daemon=True)
 
+FRAME_WIDTH=960
+FRAME_HEIGHT=720
+
 # =====================================================================
 # MAIN FRAME COMPUTATION WHIRLPOOL
 # =====================================================================
 try:
-    while True:
+    while True:        
         frame_read = drone.get_frame_read()
         raw_frame = frame_read.frame
         if raw_frame is None:
@@ -166,7 +192,7 @@ try:
             
         raw_frame_bgr = cv2.cvtColor(raw_frame, cv2.COLOR_RGB2BGR)
 
-        resized_frame = cv2.resize(raw_frame_bgr, (960, 720))
+        resized_frame = cv2.resize(raw_frame_bgr, (FRAME_WIDTH, FRAME_HEIGHT))
         frame = cv2.flip(resized_frame, 1) 
 
         h, w, _ = frame.shape
@@ -218,15 +244,85 @@ try:
                 cv2.aruco.drawDetectedMarkers(resized_frame, corners, ids)
                 frame = cv2.flip(resized_frame, 1)
                 match ids:
+                    # ... add more cases here for more tags if needed
+                    case 5: pass
                     case 6:
-                        drone.rotate_clockwise(90)
-                        drone.move_forward(50)
+                        current_mode = 4 # waitting thread finish then continue, reuse keyboard mode
+                        print(f"\n[MODE SWITCH] Switched to auto-pilot mode")
+                        #threading.Thread(target=turnMove, daemon=True).start()
+                    case 7: pass
+                    # .... add more cases here for more tags if needed
+
+        elif current_mode == 4:
+            corners, ids, rejected = detector.detectMarkers(resized_frame)
+            if ids is not None:
+                print(ids)
+                cv2.aruco.drawDetectedMarkers(resized_frame, corners, ids)
+                frame = cv2.flip(resized_frame, 1)
+                match ids:
                     case 7:
-                        drone.rotate_clockwise(90)
-                        drone.move_forward(50)
-                        drone.land()
+                        current_mode = 5 # waitting thread finish then continue, reuse keyboard mode
+                        print(f"\n[MODE SWITCH] Switched to auto-landing mode")
+                       
+            else:
+                #fb = Config.MANUAL_SPEED
+                drone.move_back(20)
+
+        elif current_mode == 5:
+            drone.send_rc_control(0,0,0,0)
+            
+            corners, ids, rejected = detector.detectMarkers(resized_frame)
+            if ids is not None:
+                marker_corners = corners[0][0]
+        
+                # Calculate the center (average of X's and average of Y's)
+                center_x = int((marker_corners[0][0] + marker_corners[1][0] + marker_corners[2][0] + marker_corners[3][0]) / 4)
+                center_y = int((marker_corners[0][1] + marker_corners[1][1] + marker_corners[2][1] + marker_corners[3][1]) / 4)
+                
+                # Output the coordinates
+                print(f"Marker ID {ids} Center -> X: {center_x}, Y: {center_y}")
+                
+                # Optional: Draw a circle at the center for visual debugging
+                cv2.circle(frame, (center_x, center_y), 5, (0, 255, 0), -1)
+                cv2.circle(frame, (int(FRAME_WIDTH/2), int(FRAME_HEIGHT/2)), 5, (255, 0, 0), -1)
+
+                delta_x = center_x - int(FRAME_WIDTH/2)
+                delta_y = center_y - int(FRAME_HEIGHT/2)
+
+                print(f"Marker ID {ids} Delta -> X: {delta_x}, Y: {delta_y}")
 
                 
+                # For down camera, X - fb direction, Y - lr direction
+                if delta_x > 40: 
+                    drone.move_back(20)
+                    #drone.send_rc_control(0, -20, 0, 0)
+                    #time.sleep(0.1)
+                    #drone.send_rc_control(0,0,0,0)
+                elif delta_x < -40: 
+                    drone.move_forward(20)
+                    #drone.send_rc_control(0, 20, 0, 0)
+                    #time.sleep(0.1)
+                    #drone.send_rc_control(0,0,0,0)
+                elif delta_y > 40: 
+                    drone.move_left(20)
+                    #drone.send_rc_control(-20, 0, -20, 0)
+                    #time.sleep(0.1)
+                    #drone.send_rc_control(0,0,0,0)
+                elif delta_y < -40: 
+                    drone.move_right(20)
+                    #drone.send_rc_control(20, 0, -20, 0)
+                    #time.sleep(0.1)
+                    #drone.send_rc_control(0,0,0,0)
+                else: 
+                    print("Landing")
+                    threading.Thread(target=run_async_maneuver, args=(drone.land,), daemon=True).start()
+                    current_mode = 1
+
+
+
+
+                
+               
 
         # =====================================================================
         # FLIGHT CONTROL DISPATCH & DIAGNOSTICS
@@ -267,10 +363,10 @@ try:
 
 finally:
     print("\nExecuting Safe System Shutdown Sequence...")
-
+    
     try: 
         if drone.is_flying:
-            drone.land()
+            threading.Thread(target=run_async_maneuver, args=(drone.land,), daemon=True).start()
         drone.send_rc_control(0, 0, 0, 0)
         drone.streamoff()  
     except Exception as shutdown_err: 
