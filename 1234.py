@@ -245,10 +245,14 @@ try:
                 cv2.aruco.drawDetectedMarkers(resized_frame, corners, ids)
                 frame = cv2.flip(resized_frame, 1)
                 match ids:
+                    # ... add more cases here for more tags if needed
+                    case 5: pass
                     case 6:
                         current_mode = 4 # waitting thread finish then continue, reuse keyboard mode
                         print(f"\n[MODE SWITCH] Switched to auto-pilot mode")
                         #threading.Thread(target=turnMove, daemon=True).start()
+                    case 7: pass
+                    # .... add more cases here for more tags if needed
 
         elif current_mode == 4:
             corners, ids, rejected = detector.detectMarkers(resized_frame)
